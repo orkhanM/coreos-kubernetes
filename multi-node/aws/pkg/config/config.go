@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net"
+	"net/url"
 	"strings"
 	"text/template"
 
@@ -36,7 +37,7 @@ func newDefaultCluster() *Cluster {
 		PodCIDR:                  "10.2.0.0/16",
 		ServiceCIDR:              "10.3.0.0/24",
 		DNSServiceIP:             "10.3.0.10",
-		EtcdEndpoints:            "10.0.0.50",
+		EtcdEndpoints:            "http://10.0.0.50:2379",
 		K8sVer:                   "v1.2.0_coreos.1",
 		HyperkubeImageRepo:       "quay.io/coreos/hyperkube",
 		ControllerInstanceType:   "m3.medium",
@@ -108,15 +109,15 @@ const (
 func (c Cluster) Config() (*Config, error) {
 	config := Config{Cluster: c}
 	etcdEndpoints := strings.Split(c.EtcdEndpoints, ",")
-	var buffer bytes.Buffer
 	for i := range etcdEndpoints {
-		buffer.WriteString("http://" + etcdEndpoints[i] + ":2379")
-		if i < (len(etcdEndpoints) - 1) {
-			buffer.WriteString(",")
+		// Check for a valid url, but leave it as-is otherwise.
+		_, err := url.Parse(etcdEndpoints[i])
+		if err != nil {
+			return nil, err
 		}
 	}
 	config.EtcdEndpoint = etcdEndpoints[0]
-	config.EtcdEndpoints = buffer.String()
+	config.EtcdEndpoints = c.EtcdEndpoints
 	config.APIServers = fmt.Sprintf("http://%s:8080", c.ControllerIP)
 	config.SecureAPIServers = fmt.Sprintf("https://%s:443", c.ControllerIP)
 	config.APIServerEndpoint = fmt.Sprintf("https://%s", c.ExternalDNSName)
@@ -184,8 +185,10 @@ func (c Cluster) stackConfig(opts StackTemplateOptions, compressUserData bool) (
 		return nil, err
 	}
 
-	awsConfig := aws.NewConfig()
-	awsConfig = awsConfig.WithRegion(stackConfig.Config.Region)
+	awsConfig := aws.NewConfig().
+		WithRegion(stackConfig.Config.Region).
+		WithCredentialsChainVerboseErrors(true)
+
 	kmsSvc := kms.New(session.New(awsConfig))
 
 	compactAssets, err := assets.compact(stackConfig.Config, kmsSvc)
