@@ -109,12 +109,12 @@ type Cluster struct {
 	K8sVer                   string `yaml:"kubernetesVersion"`
 	EtcdEndpoints            string `yaml:"etcdEndpoints"`
 	EtcdEndpoint             string
+	EtcdSecurityGroupId      string `yaml:"etcdSecurityGroupId"`
 	HyperkubeImageRepo       string `yaml:"hyperkubeImageRepo"`
 	KMSKeyARN                string `yaml:"kmsKeyArn"`
-
-	CreateRecordSet bool   `yaml:"createRecordSet"`
-	RecordSetTTL    int    `yaml:"recordSetTTL"`
-	HostedZone      string `yaml:"hostedZone"`
+	CreateRecordSet          bool   `yaml:"createRecordSet"`
+	RecordSetTTL             int    `yaml:"recordSetTTL"`
+	HostedZone               string `yaml:"hostedZone"`
 }
 
 const (
@@ -268,6 +268,15 @@ func (c Cluster) ValidateUserData(opts StackTemplateOptions) error {
 	}
 
 	return nil
+}
+
+func (c Cluster) CustomEtcdEndpoint() bool {
+	endpoint, _ := url.Parse(c.EtcdEndpoint)
+	host := strings.Split(endpoint.Host, ":")[0]
+	if host == c.ControllerIP {
+		return false
+	}
+	return true
 }
 
 func (c Cluster) RenderStackTemplate(opts StackTemplateOptions) ([]byte, error) {
