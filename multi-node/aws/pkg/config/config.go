@@ -118,6 +118,12 @@ const (
 	vpcLogicalName = "VPC"
 )
 
+var supportedReleaseChannels = map[string]bool{
+	"alpha":  true,
+	"beta":   true,
+	"stable": false,
+}
+
 func (c Cluster) Config() (*Config, error) {
 	config := Config{Cluster: c}
 
@@ -344,6 +350,12 @@ func (cfg Cluster) valid() error {
 	if cfg.ExternalDNSName == "" {
 		return errors.New("externalDNSName must be set")
 	}
+
+	releaseChannelSupported := supportedReleaseChannels[cfg.ReleaseChannel]
+	if !releaseChannelSupported {
+		return fmt.Errorf("releaseChannel %s is not supported", cfg.ReleaseChannel)
+	}
+
 	if cfg.CreateRecordSet {
 		if cfg.HostedZone == "" {
 			return errors.New("hostedZone cannot be blank when createRecordSet is true")
