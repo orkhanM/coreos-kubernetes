@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -17,15 +18,15 @@ import (
 	"github.com/coreos/coreos-kubernetes/multi-node/aws/pkg/config"
 )
 
-// set by build script
+// VERSION set by build script
 var VERSION = "UNKNOWN"
 
-type ClusterInfo struct {
+type Info struct {
 	Name         string
 	ControllerIP string
 }
 
-func (c *ClusterInfo) String() string {
+func (c *Info) String() string {
 	buf := new(bytes.Buffer)
 	w := new(tabwriter.Writer)
 	w.Init(buf, 0, 8, 0, '\t', 0)
@@ -95,14 +96,18 @@ func (c *Cluster) validateExistingVPCState(ec2Svc ec2Service) error {
 	}
 	if len(vpcOutput.Vpcs) > 1 {
 		//Theoretically this should never happen. If it does, we probably want to know.
-		return fmt.Errorf("found more than one vpc with id %s. this is NOT NORMAL.", c.VPCID)
+		return fmt.Errorf("found more than one vpc with id %s. this is NOT NORMAL", c.VPCID)
 	}
 
 	existingVPC := vpcOutput.Vpcs[0]
 
 	if *existingVPC.CidrBlock != c.VPCCIDR {
 		//If this is the case, our network config validation cannot be trusted and we must abort
-		return fmt.Errorf("configured vpcCidr (%s) does not match actual existing vpc cidr (%s)", c.VPCCIDR, *existingVPC.CidrBlock)
+		return fmt.Errorf(
+			"configured vpcCidr (%s) does not match actual existing vpc cidr (%s)",
+			c.VPCCIDR,
+			*existingVPC.CidrBlock,
+		)
 	}
 
 	describeSubnetsInput := ec2.DescribeSubnetsInput{
@@ -138,7 +143,6 @@ func (c *Cluster) Create(stackBody string) error {
 	}
 
 	ec2Svc := ec2.New(c.session)
-
 	if err := c.validateKeyPair(ec2Svc); err != nil {
 		return err
 	}
@@ -148,7 +152,6 @@ func (c *Cluster) Create(stackBody string) error {
 	}
 
 	cfSvc := cloudformation.New(c.session)
-
 	resp, err := c.createStack(cfSvc, stackBody)
 	if err != nil {
 		return err
@@ -157,6 +160,7 @@ func (c *Cluster) Create(stackBody string) error {
 	req := cloudformation.DescribeStacksInput{
 		StackName: resp.StackId,
 	}
+
 	for {
 		resp, err := cfSvc.DescribeStacks(&req)
 		if err != nil {
@@ -175,6 +179,16 @@ func (c *Cluster) Create(stackBody string) error {
 				statusString,
 				aws.StringValue(resp.Stacks[0].StackStatusReason),
 			)
+			errMsg = errMsg + "\n\nPrinting the most recent failed stack events:\n"
+
+			stackEventsOutput, err := cfSvc.DescribeStackEvents(
+				&cloudformation.DescribeStackEventsInput{
+					StackName: resp.Stacks[0].StackName,
+				})
+			if err != nil {
+				return err
+			}
+			errMsg = errMsg + strings.Join(stackEventErrMsgs(stackEventsOutput.StackEvents), "\n")
 			return errors.New(errMsg)
 		case cloudformation.ResourceStatusCreateInProgress:
 			time.Sleep(3 * time.Second)
@@ -200,7 +214,7 @@ func (c *Cluster) createStack(cfSvc cloudformationService, stackBody string) (*c
 
 	creq := &cloudformation.CreateStackInput{
 		StackName:    aws.String(c.ClusterName),
-		OnFailure:    aws.String("DO_NOTHING"),
+		OnFailure:    aws.String(cloudformation.OnFailureDoNothing),
 		Capabilities: []*string{aws.String(cloudformation.CapabilityCapabilityIam)},
 		TemplateBody: &stackBody,
 		Tags:         tags,
@@ -248,7 +262,7 @@ func (c *Cluster) Update(stackBody string) (string, error) {
 	}
 }
 
-func (c *Cluster) Info() (*ClusterInfo, error) {
+func (c *Cluster) Info() (*Info, error) {
 	cfSvc := cloudformation.New(c.session)
 	resp, err := cfSvc.DescribeStackResource(
 		&cloudformation.DescribeStackResourceInput{
@@ -261,7 +275,7 @@ func (c *Cluster) Info() (*ClusterInfo, error) {
 		return nil, fmt.Errorf(errmsg)
 	}
 
-	var info ClusterInfo
+	var info Info
 	info.ControllerIP = *resp.StackResourceDetail.PhysicalResourceId
 	info.Name = c.ClusterName
 	return &info, nil
@@ -336,4 +350,26 @@ func (c *Cluster) validateDNSConfig(r53 r53Service) error {
 	}
 
 	return nil
+}
+
+func stackEventErrMsgs(events []*cloudformation.StackEvent) []string {
+	var errMsgs []string
+
+	for _, event := range events {
+		if aws.StringValue(event.ResourceStatus) == cloudformation.ResourceStatusCreateFailed {
+			// Only show actual failures, not cancelled dependent resources.
+			if aws.StringValue(event.ResourceStatusReason) != "Resource creation cancelled" {
+				errMsgs = append(errMsgs,
+					strings.TrimSpace(
+						strings.Join([]string{
+							aws.StringValue(event.ResourceStatus),
+							aws.StringValue(event.ResourceType),
+							aws.StringValue(event.LogicalResourceId),
+							aws.StringValue(event.ResourceStatusReason),
+						}, " ")))
+			}
+		}
+	}
+
+	return errMsgs
 }

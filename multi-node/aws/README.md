@@ -101,7 +101,7 @@ You can now customize your cluster by editing asset files:
 
   This is the configuration file for your cluster. It contains the configuration parameters that are templated into your userdata and cloudformation stack.
 
-* **cloud-config/**
+* **userdata/**
 
   * `cloud-config-worker`
   * `cloud-config-controller`
@@ -186,6 +186,8 @@ The various templates are located in the `pkg/config/templates/` folder of the s
 ```sh
 go generate ./pkg/config
 ```
+
+This command is run automatically as part of the `build` script.
 
 ### Useful Resources
 
