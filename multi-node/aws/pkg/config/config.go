@@ -2,7 +2,6 @@ package config
 
 //go:generate go run templates_gen.go
 //go:generate gofmt -w templates.go
-
 import (
 	"bytes"
 	"encoding/json"
@@ -10,6 +9,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net"
+	"net/url"
 	"strings"
 	"text/template"
 	"unicode/utf8"
@@ -34,10 +34,11 @@ func newDefaultCluster() *Cluster {
 		VPCCIDR:                  "10.0.0.0/16",
 		InstanceCIDR:             "10.0.0.0/24",
 		ControllerIP:             "10.0.0.50",
+		EtcdEndpoints:            "http://10.0.0.50:2379",
 		PodCIDR:                  "10.2.0.0/16",
 		ServiceCIDR:              "10.3.0.0/24",
 		DNSServiceIP:             "10.3.0.10",
-		K8sVer:                   "v1.2.2_coreos.0",
+		K8sVer:                   "v1.2.3_coreos.0",
 		HyperkubeImageRepo:       "quay.io/coreos/hyperkube",
 		ControllerInstanceType:   "m3.medium",
 		ControllerRootVolumeSize: 30,
@@ -81,23 +82,26 @@ func ClusterFromBytes(data []byte) (*Cluster, error) {
 }
 
 type Cluster struct {
-	ClusterName              string            `yaml:"clusterName"`
-	ExternalDNSName          string            `yaml:"externalDNSName"`
-	KeyName                  string            `yaml:"keyName"`
-	Region                   string            `yaml:"region"`
-	AvailabilityZone         string            `yaml:"availabilityZone"`
-	ReleaseChannel           string            `yaml:"releaseChannel"`
-	ControllerInstanceType   string            `yaml:"controllerInstanceType"`
-	ControllerRootVolumeSize int               `yaml:"controllerRootVolumeSize"`
-	WorkerCount              int               `yaml:"workerCount"`
-	WorkerInstanceType       string            `yaml:"workerInstanceType"`
-	WorkerRootVolumeSize     int               `yaml:"workerRootVolumeSize"`
-	WorkerSpotPrice          string            `yaml:"workerSpotPrice"`
-	VPCID                    string            `yaml:"vpcId"`
-	RouteTableID             string            `yaml:"routeTableId"`
-	VPCCIDR                  string            `yaml:"vpcCIDR"`
-	InstanceCIDR             string            `yaml:"instanceCIDR"`
-	ControllerIP             string            `yaml:"controllerIP"`
+	ClusterName              string `yaml:"clusterName"`
+	ExternalDNSName          string `yaml:"externalDNSName"`
+	KeyName                  string `yaml:"keyName"`
+	Region                   string `yaml:"region"`
+	AvailabilityZone         string `yaml:"availabilityZone"`
+	ReleaseChannel           string `yaml:"releaseChannel"`
+	ControllerInstanceType   string `yaml:"controllerInstanceType"`
+	ControllerRootVolumeSize int    `yaml:"controllerRootVolumeSize"`
+	WorkerCount              int    `yaml:"workerCount"`
+	WorkerInstanceType       string `yaml:"workerInstanceType"`
+	WorkerRootVolumeSize     int    `yaml:"workerRootVolumeSize"`
+	WorkerSpotPrice          string `yaml:"workerSpotPrice"`
+	VPCID                    string `yaml:"vpcId"`
+	RouteTableID             string `yaml:"routeTableId"`
+	VPCCIDR                  string `yaml:"vpcCIDR"`
+	InstanceCIDR             string `yaml:"instanceCIDR"`
+	ControllerIP             string `yaml:"controllerIP"`
+	EtcdEndpoints            string `yaml:"etcdEndpoints"`
+	EtcdEndpoint             string
+	EtcdSecurityGroupId      string            `yaml:"etcdSecurityGroupId"`
 	PodCIDR                  string            `yaml:"podCIDR"`
 	ServiceCIDR              string            `yaml:"serviceCIDR"`
 	DNSServiceIP             string            `yaml:"dnsServiceIP"`
@@ -108,18 +112,30 @@ type Cluster struct {
 	RecordSetTTL             int               `yaml:"recordSetTTL"`
 	HostedZone               string            `yaml:"hostedZone"`
 	StackTags                map[string]string `yaml:"stackTags"`
+	UseCalico                bool              `yaml:"useCalico"`
 }
 
 const (
 	vpcLogicalName = "VPC"
 )
 
+var supportedReleaseChannels = map[string]bool{
+	"alpha":  true,
+	"beta":   true,
+	"stable": false,
+}
+
 func (c Cluster) Config() (*Config, error) {
 	config := Config{Cluster: c}
-	config.ETCDEndpoints = fmt.Sprintf("http://%s:2379", c.ControllerIP)
+
+	config.EtcdEndpoint = strings.Split(c.EtcdEndpoints, ",")[0]
+	config.EtcdEndpoints = c.EtcdEndpoints
 	config.APIServers = fmt.Sprintf("http://%s:8080", c.ControllerIP)
 	config.SecureAPIServers = fmt.Sprintf("https://%s:443", c.ControllerIP)
 	config.APIServerEndpoint = fmt.Sprintf("https://%s", c.ExternalDNSName)
+	if config.UseCalico {
+		config.K8sNetworkPlugin = "cni"
+	}
 
 	var err error
 	if config.AMI, err = getAMI(config.Region, config.ReleaseChannel); err != nil {
@@ -139,6 +155,15 @@ func (c Cluster) Config() (*Config, error) {
 	}
 
 	return &config, nil
+}
+
+func (c Cluster) CustomEtcdEndpoint() bool {
+	endpoint, _ := url.Parse(c.EtcdEndpoint)
+	host := strings.Split(endpoint.Host, ":")[0]
+	if host == c.ControllerIP {
+		return false
+	}
+	return true
 }
 
 type StackTemplateOptions struct {
@@ -309,7 +334,7 @@ func getContextString(buf []byte, offset, lineCount int) string {
 type Config struct {
 	Cluster
 
-	ETCDEndpoints     string
+	EtcdEndpoints     string
 	APIServers        string
 	SecureAPIServers  string
 	APIServerEndpoint string
@@ -323,108 +348,123 @@ type Config struct {
 
 	//Reference strings for dynamic resources
 	VPCRef string
+
+	K8sNetworkPlugin string
 }
 
-func (cfg Cluster) valid() error {
-	if cfg.ExternalDNSName == "" {
+func (c Cluster) valid() error {
+	if c.ExternalDNSName == "" {
 		return errors.New("externalDNSName must be set")
 	}
-	if cfg.CreateRecordSet {
-		if cfg.HostedZone == "" {
+
+	releaseChannelSupported := supportedReleaseChannels[c.ReleaseChannel]
+	if !releaseChannelSupported {
+		return fmt.Errorf("releaseChannel %s is not supported", c.ReleaseChannel)
+	}
+
+	if c.CreateRecordSet {
+		if c.HostedZone == "" {
 			return errors.New("hostedZone cannot be blank when createRecordSet is true")
 		}
-		if cfg.RecordSetTTL < 1 {
+		if c.RecordSetTTL < 1 {
 			return errors.New("TTL must be at least 1 second")
 		}
-		if !isSubdomain(cfg.ExternalDNSName, cfg.HostedZone) {
+		if !isSubdomain(c.ExternalDNSName, c.HostedZone) {
 			return fmt.Errorf("%s is not a subdomain of %s",
-				cfg.ExternalDNSName,
-				cfg.HostedZone)
+				c.ExternalDNSName,
+				c.HostedZone)
 		}
 	} else {
-		if cfg.RecordSetTTL != newDefaultCluster().RecordSetTTL {
+		if c.RecordSetTTL != newDefaultCluster().RecordSetTTL {
 			return errors.New(
 				"recordSetTTL should not be modified when createRecordSet is false",
 			)
 		}
 	}
-	if cfg.KeyName == "" {
+	if c.KeyName == "" {
 		return errors.New("keyName must be set")
 	}
-	if cfg.Region == "" {
+	if c.Region == "" {
 		return errors.New("region must be set")
 	}
-	if cfg.AvailabilityZone == "" {
+	if c.AvailabilityZone == "" {
 		return errors.New("availabilityZone must be set")
 	}
-	if cfg.ClusterName == "" {
+	if c.ClusterName == "" {
 		return errors.New("clusterName must be set")
 	}
-	if cfg.KMSKeyARN == "" {
+	if c.KMSKeyARN == "" {
 		return errors.New("kmsKeyArn must be set")
 	}
 
-	if cfg.VPCID == "" && cfg.RouteTableID != "" {
+	if c.VPCID == "" && c.RouteTableID != "" {
 		return errors.New("vpcId must be specified if routeTableId is specified")
 	}
 
-	_, vpcNet, err := net.ParseCIDR(cfg.VPCCIDR)
+	_, vpcNet, err := net.ParseCIDR(c.VPCCIDR)
 	if err != nil {
 		return fmt.Errorf("invalid vpcCIDR: %v", err)
 	}
 
-	_, instancesNet, err := net.ParseCIDR(cfg.InstanceCIDR)
+	_, instancesNet, err := net.ParseCIDR(c.InstanceCIDR)
 	if err != nil {
 		return fmt.Errorf("invalid instanceCIDR: %v", err)
 	}
 	if !vpcNet.Contains(instancesNet.IP) {
 		return fmt.Errorf("vpcCIDR (%s) does not contain instanceCIDR (%s)",
-			cfg.VPCCIDR,
-			cfg.InstanceCIDR,
+			c.VPCCIDR,
+			c.InstanceCIDR,
 		)
 	}
 
-	controllerIPAddr := net.ParseIP(cfg.ControllerIP)
+	controllerIPAddr := net.ParseIP(c.ControllerIP)
 	if controllerIPAddr == nil {
-		return fmt.Errorf("invalid controllerIP: %s", cfg.ControllerIP)
+		return fmt.Errorf("invalid controllerIP: %s", c.ControllerIP)
 	}
 	if !instancesNet.Contains(controllerIPAddr) {
 		return fmt.Errorf("instanceCIDR (%s) does not contain controllerIP (%s)",
-			cfg.InstanceCIDR,
-			cfg.ControllerIP,
+			c.InstanceCIDR,
+			c.ControllerIP,
 		)
 	}
 
-	_, podNet, err := net.ParseCIDR(cfg.PodCIDR)
+	for _, endpoint := range strings.Split(c.EtcdEndpoints, ",") {
+		_, err := url.Parse(endpoint)
+		if err != nil {
+			return fmt.Errorf("etcd endpoint invalid (%s): (%v)", endpoint, err)
+		}
+	}
+
+	_, podNet, err := net.ParseCIDR(c.PodCIDR)
 	if err != nil {
 		return fmt.Errorf("invalid podCIDR: %v", err)
 	}
 
-	_, serviceNet, err := net.ParseCIDR(cfg.ServiceCIDR)
+	_, serviceNet, err := net.ParseCIDR(c.ServiceCIDR)
 	if err != nil {
 		return fmt.Errorf("invalid serviceCIDR: %v", err)
 	}
 	if cidrOverlap(serviceNet, vpcNet) {
-		return fmt.Errorf("vpcCIDR (%s) overlaps with serviceCIDR (%s)", cfg.VPCCIDR, cfg.ServiceCIDR)
+		return fmt.Errorf("vpcCIDR (%s) overlaps with serviceCIDR (%s)", c.VPCCIDR, c.ServiceCIDR)
 	}
 	if cidrOverlap(podNet, vpcNet) {
-		return fmt.Errorf("vpcCIDR (%s) overlaps with podCIDR (%s)", cfg.VPCCIDR, cfg.PodCIDR)
+		return fmt.Errorf("vpcCIDR (%s) overlaps with podCIDR (%s)", c.VPCCIDR, c.PodCIDR)
 	}
 	if cidrOverlap(serviceNet, podNet) {
-		return fmt.Errorf("serviceCIDR (%s) overlaps with podCIDR (%s)", cfg.ServiceCIDR, cfg.PodCIDR)
+		return fmt.Errorf("serviceCIDR (%s) overlaps with podCIDR (%s)", c.ServiceCIDR, c.PodCIDR)
 	}
 
 	kubernetesServiceIPAddr := incrementIP(serviceNet.IP)
 	if !serviceNet.Contains(kubernetesServiceIPAddr) {
-		return fmt.Errorf("serviceCIDR (%s) does not contain kubernetesServiceIP (%s)", cfg.ServiceCIDR, kubernetesServiceIPAddr)
+		return fmt.Errorf("serviceCIDR (%s) does not contain kubernetesServiceIP (%s)", c.ServiceCIDR, kubernetesServiceIPAddr)
 	}
 
-	dnsServiceIPAddr := net.ParseIP(cfg.DNSServiceIP)
+	dnsServiceIPAddr := net.ParseIP(c.DNSServiceIP)
 	if dnsServiceIPAddr == nil {
-		return fmt.Errorf("Invalid dnsServiceIP: %s", cfg.DNSServiceIP)
+		return fmt.Errorf("Invalid dnsServiceIP: %s", c.DNSServiceIP)
 	}
 	if !serviceNet.Contains(dnsServiceIPAddr) {
-		return fmt.Errorf("serviceCIDR (%s) does not contain dnsServiceIP (%s)", cfg.ServiceCIDR, cfg.DNSServiceIP)
+		return fmt.Errorf("serviceCIDR (%s) does not contain dnsServiceIP (%s)", c.ServiceCIDR, c.DNSServiceIP)
 	}
 
 	if dnsServiceIPAddr.Equal(kubernetesServiceIPAddr) {

@@ -59,7 +59,7 @@
           {
             "Key": "Name",
             "PropagateAtLaunch": "true",
-            "Value": "kube-aws-worker"
+            "Value": "{{.ClusterName}}-kube-aws-worker"
           }
         ],
         "VPCZoneIdentifier": [
@@ -264,7 +264,7 @@
           },
           {
             "Key": "Name",
-            "Value": "kube-aws-controller"
+            "Value": "{{.ClusterName}}-kube-aws-controller"
           }
         ],
         "UserData": "{{ .UserDataController }}"
@@ -348,10 +348,39 @@
       },
       "Type": "AWS::EC2::SecurityGroup"
     },
-    "SecurityGroupControllerIngressFromWorkerToEtcd": {
+    {{if .CustomEtcdEndpoint}}
+    "SecurityGroupIngressFromWorkerToEtcd": {
       "Properties": {
         "FromPort": 2379,
-        "GroupId": {
+        "GroupId": 
+          "{{.EtcdSecurityGroupId}}",
+        "IpProtocol": "tcp",
+        "SourceSecurityGroupId": {
+          "Ref": "SecurityGroupWorker"
+        },
+        "ToPort": 2379
+      },
+      "Type": "AWS::EC2::SecurityGroupIngress"
+    },
+    "SecurityGroupIngressFromControllerToEtcd": {
+      "Properties": {
+        "FromPort": 2379,
+        "GroupId": 
+          "{{.EtcdSecurityGroupId}}",
+        "IpProtocol": "tcp",
+        "SourceSecurityGroupId": {
+          "Ref": "SecurityGroupController"
+        },
+        "ToPort": 2379
+      },
+      "Type": "AWS::EC2::SecurityGroupIngress"
+    },
+    {{else}}
+    "SecurityGroupIngressFromWorkerToEtcd": {
+      "Properties": {
+        "FromPort": 2379,
+        "GroupId": 
+        { 
           "Ref": "SecurityGroupController"
         },
         "IpProtocol": "tcp",
@@ -362,6 +391,7 @@
       },
       "Type": "AWS::EC2::SecurityGroupIngress"
     },
+    {{end}}
     "SecurityGroupWorker": {
       "Properties": {
         "GroupDescription": {
@@ -475,11 +505,25 @@
       },
       "Type": "AWS::EC2::SecurityGroupIngress"
     },
-    "SecurityGroupWorkerIngressFromWorkerToKubeletReadOnly": {
+    "SecurityGroupWorkerIngressFromWorkerToWorkerKubeletReadOnly": {
       "Properties": {
         "FromPort": 10255,
         "GroupId": {
           "Ref": "SecurityGroupWorker"
+        },
+        "IpProtocol": "tcp",
+        "SourceSecurityGroupId": {
+          "Ref": "SecurityGroupWorker"
+        },
+        "ToPort": 10255
+      },
+      "Type": "AWS::EC2::SecurityGroupIngress"
+    },
+    "SecurityGroupWorkerIngressFromWorkerToControllerKubeletReadOnly": {
+      "Properties": {
+        "FromPort": 10255,
+        "GroupId": {
+          "Ref": "SecurityGroupController"
         },
         "IpProtocol": "tcp",
         "SourceSecurityGroupId": {
