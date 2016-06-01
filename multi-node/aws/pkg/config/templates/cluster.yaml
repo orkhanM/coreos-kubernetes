@@ -76,6 +76,8 @@ kmsKeyArn: "{{.KMSKeyARN}}"
 # etcdEndpoints: "http://10.0.0.50:2379"
 # etcdSecurityGroupId: ""
 
+# Security Group Id for coreupdate servers
+# SecurityGroupCoreUpdate: ""
 
 # CIDR for all service IP addresses
 # serviceCIDR: "10.3.0.0/24"

@@ -99,6 +99,7 @@ type Cluster struct {
 	VPCCIDR                  string `yaml:"vpcCIDR"`
 	InstanceCIDR             string `yaml:"instanceCIDR"`
 	ControllerIP             string `yaml:"controllerIP"`
+	SecurityGroupCoreUpdate  string `yaml:"SecurityGroupCoreUpdate"`
 	EtcdEndpoints            string `yaml:"etcdEndpoints"`
 	EtcdEndpoint             string
 	EtcdSecurityGroupId      string            `yaml:"etcdSecurityGroupId"`

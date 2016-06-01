@@ -247,6 +247,9 @@
             "DeleteOnTermination": true,
             "DeviceIndex": "0",
             "GroupSet": [
+              {{if .SecurityGroupCoreUpdate}}
+                "{{.SecurityGroupCoreUpdate}}",
+              {{end}}
               {
                 "Ref": "SecurityGroupController"
               }
@@ -288,6 +291,9 @@
         "InstanceType": "{{.WorkerInstanceType}}",
         "KeyName": "{{.KeyName}}",
         "SecurityGroups": [
+          {{if .SecurityGroupCoreUpdate}}
+            "{{.SecurityGroupCoreUpdate}}",
+          {{end}}
           {
             "Ref": "SecurityGroupWorker"
           }
